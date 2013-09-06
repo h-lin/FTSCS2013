@@ -1,0 +1,993 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_1.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+const int gCycleCounterMax=6; //max. number of cycle
+const int gNumberOfStaticSlots = 6; //number of static segment slots
+const int gNumberOfMinislots = 32; //number of dynamic segment minislots
+//const int Node=4; // number of nodes
+const int cSlotIDMax = 10;  //maximum number of slot ID
+const int cStaticSlotIDMax=6; 
+const int MaxDataValue = 100;
+const int pPayloadLengthDynMax =200;
+const int pPayloadLengthStatic =200;
+const int gdCycle= 650;
+const int gdMacroPerCycle=130;
+const int gdMacrotick =5;
+const int gdNIT = 4;
+const int gdActionPointOffset=2; //static offset
+const int gdStaticSlot=5;  // number of macroticks in a static slot
+const int gdMinislotActionPointOffset=1; //offset of minislot
+const int gdMinislot=3;  // number of macroticks in a minislot
+const int adActionPointDifference=1;
+// Caution: You have to make sure "tActionPoint &lt; tMinislot" or the system may not work in dynamic segment
+
+//type define for messages in tasks
+typedef int[1,cSlotIDMax] t_msg_slot;
+// for each application, you need to set mapping of messages &lt;-&gt; slot ids below
+const t_msg_slot msg1= 1;
+const t_msg_slot msg2= 2;
+const t_msg_slot msg3= 3;
+const t_msg_slot msg4= 4;
+const t_msg_slot msg5= 5;
+const t_msg_slot msg6= 6;
+const t_msg_slot msg7= 7;
+const t_msg_slot msg8= 8;
+const t_msg_slot msg9= 9;
+const t_msg_slot msg10= 10;
+
+int tSlotBoundary;
+int tActionPoint=gdActionPointOffset;
+int tMinislotActionPoint = gdMinislotActionPointOffset;
+
+
+chan cycle_start, cycle_end, dyn_seg_start,NIT_start, set_timerA, set_timerB;
+chan SlotStart, SlotEnd;
+urgent chan go;
+
+//int timer_max()
+//{
+//  if (tStaticSlot &gt;= tMinislot) return tStaticSlot+1;
+//  return tMinislot+1;
+//}
+
+int cycle_MT()  // calculate totol Macrotick of a cycle
+{
+  int temp;
+  temp = (gNumberOfStaticSlots * gdStaticSlot) + (gNumberOfMinislots * gdMinislot);
+  if (gdActionPointOffset &gt; gdMinislotActionPointOffset) temp = temp + (gdActionPointOffset - gdMinislotActionPointOffset);
+  return temp;
+}
+const int MT_per_cycle = cycle_MT();
+
+const int IDLE = 0;
+const int CE_start = 1;
+const int CHIRP = 2;
+int[0,2] bus_status = IDLE;
+
+//const int timer_max = (tStaticSlot &gt;= tMinislot) ? tStaticSlot+1 : tMinislot+1;
+typedef int[0,MT_per_cycle] timer_int;  // defin a type to constraint maximum value used in timer. (Macrotick model)
+timer_int tSlotActionPoint, tSlotEnd;
+
+//typedef int [0,Node-1] id_n;
+typedef struct{
+    int[0,gCycleCounterMax] vCycleCounter; // the number of current communication cycle
+    int[0,cSlotIDMax]  vSlotCounter;  // the number of current slot  
+    bool ValidFrame;
+    //bool FrameSent;
+    //int[0,2] Segment;
+} T_SlotStatus;
+
+T_SlotStatus vSS; // all nodes keep one set of data of slot status
+
+typedef struct {
+   int[0,cSlotIDMax]       frame_id;
+   int[0,gCycleCounterMax] cycle_id;
+   int[0,MaxDataValue] data;
+   int[0,pPayloadLengthDynMax] length;
+} Frame;
+
+Frame bus;
+
+typedef struct {
+   int[0,MaxDataValue] data;
+   int[0,pPayloadLengthDynMax] length;
+} Buffer;
+
+Buffer CHI_Buffer_send[cSlotIDMax+1];
+Buffer CHI_Buffer_receive[cSlotIDMax+1];
+
+
+
+// below are declarations for messages in tasks
+// include:
+//   configurations,
+//   type definieion,
+//   function for writing and reading CHI buffers (main interfaces), 
+//   message definitions (names of messages and corresponding values indicate slot ids)
+
+//configurations
+//const bool config_send[Node][cSlotIDMax] = {  // timing graph
+//{1,0,1,0,1,0,0,0,0,0},
+//{0,1,0,1,0,1,0,0,0,0},
+//{0,0,0,0,0,0,1,0,1,0},
+//{0,0,0,0,0,0,0,1,0,1}
+//};
+
+//const bool config_receive[Node][cSlotIDMax] = {  // timing graph
+//{0,0,0,0,0,0,0,0,0,0},
+//{0,0,0,0,0,0,0,0,0,0},
+//{0,1,0,1,0,1,0,1,0,1},
+//{1,0,1,0,1,0,1,0,1,0}
+//};
+//bool valid_config()
+//{
+//  int i, j;
+//  bool flag_send[cSlotIDMax], flag_receive[cSlotIDMax];
+//  for (i=0; i&lt;Node; i++) {
+//   for (j=0; j&lt;cSlotIDMax; j++) {
+//      if (config_send[i][j]) {
+//        if (flag_send[j]) return false; else flag_send[j] = true;
+//      }
+//      if (config_receive[i][j]) {
+//        if (flag_receive[j]) return false; else flag_receive[j] = true;
+//      }
+//    }
+//  }
+//  return true;
+//}
+
+
+
+// functions for writing and reading CHI buffers
+void write_msg_to_CHI(t_msg_slot msg, int value, int len)
+{
+  CHI_Buffer_send[msg].data = value;
+  CHI_Buffer_send[msg].length = len;
+}
+
+int read_msg_from_CHI(t_msg_slot msg)
+{
+  return CHI_Buffer_receive[msg].data;
+}
+
+void clean_send_buffer_CHI(t_msg_slot msg)
+{
+  CHI_Buffer_send[msg].data = 0;
+  CHI_Buffer_send[msg].length = 0;
+}
+
+void clean_receive_buffer_CHI(t_msg_slot msg)
+{
+  CHI_Buffer_receive[msg].data = 0;
+  CHI_Buffer_receive[msg].length = 0;
+}
+
+const int startup_offset = 0; // startup offset of flexray nodes
+
+
+
+
+
+
+</declaration>
+	<template>
+		<name x="5" y="5">MAC_static</name>
+		<declaration>// Place local declarations here.
+clock x;
+
+int[0,pPayloadLengthDynMax] frame_length;
+bool valid_frame_length()
+{
+  if (frame_length &gt; (gdStaticSlot-tActionPoint))
+    return false;  // this should never happen in static segment if parameters are correctly set
+  else
+    return true;
+}
+
+//bool my_slot()
+//{
+//  return config_send[id][vSS[id].vSlotCounter-1];
+//}
+
+bool BufferEmpty()
+{
+  if (CHI_Buffer_send[vSS.vSlotCounter].length &gt; 0) return false;
+  return true;
+}
+
+void transmit()
+{
+  // set frame length in MAC
+  frame_length = CHI_Buffer_send[vSS.vSlotCounter].length;
+  // write bus frame
+  bus.frame_id = vSS.vSlotCounter;
+  bus.cycle_id = vSS.vCycleCounter;
+  bus.data = CHI_Buffer_send[vSS.vSlotCounter].data;
+  bus.length = frame_length;
+  // erase buffer
+  CHI_Buffer_send[vSS.vSlotCounter].data = 0;
+  CHI_Buffer_send[vSS.vSlotCounter].length = 0;
+}
+
+//void ResetBusStatus()
+//{
+//  if (my_slot()) bus_status = IDLE;
+//}
+</declaration>
+		<location id="id0" x="208" y="88">
+			<name x="120" y="96">wait_for_the_end_of_transmission</name>
+			<label kind="invariant" x="216" y="56">x&lt;=frame_length</label>
+		</location>
+		<location id="id1" x="208" y="-64">
+			<name x="224" y="-80">send_message</name>
+			<committed/>
+		</location>
+		<location id="id2" x="-512" y="-152">
+			<name x="-560" y="-192">wait_cycle_start</name>
+		</location>
+		<location id="id3" x="-192" y="-8">
+			<committed/>
+		</location>
+		<location id="id4" x="208" y="-152">
+			<name x="136" y="-192">wait_for_the_action_point</name>
+		</location>
+		<location id="id5" x="-24" y="88">
+			<name x="-136" y="96">wait_for_the_static_slot_boundary</name>
+		</location>
+		<location id="id6" x="-192" y="-152">
+			<committed/>
+		</location>
+		<init ref="id2"/>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id5"/>
+			<label kind="guard" x="32" y="48">x==frame_length</label>
+			<label kind="assignment" x="32" y="64">bus_status=CHIRP</label>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id0"/>
+			<label kind="guard" x="216" y="-32">!BufferEmpty() &amp;&amp;
+valid_frame_length()</label>
+			<label kind="assignment" x="216" y="0">bus_status=CE_start,
+transmit()</label>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id3"/>
+			<label kind="synchronisation" x="-184" y="32">SlotEnd?</label>
+			<label kind="assignment" x="-184" y="48">bus_status=IDLE</label>
+			<nail x="-192" y="88"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-496" y="-32">vSS.vSlotCounter&gt;=gNumberOfStaticSlots</label>
+			<label kind="synchronisation" x="-496" y="-8">dyn_seg_start!</label>
+			<label kind="assignment" x="-496" y="8">x:=0</label>
+			<nail x="-512" y="-8"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id5"/>
+			<label kind="guard" x="-8" y="-32">BufferEmpty()</label>
+			<nail x="-24" y="32"/>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="216" y="-128">SlotStart?</label>
+			<label kind="assignment" x="216" y="-112">x:=0</label>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id4"/>
+			<label kind="synchronisation" x="-104" y="-176">set_timerA!</label>
+			<label kind="assignment" x="-104" y="-152">tSlotActionPoint:=gdActionPointOffset,
+tSlotBoundary:=gdStaticSlot,
+x:=0</label>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id6"/>
+			<label kind="synchronisation" x="-432" y="-176">cycle_start?</label>
+			<label kind="assignment" x="-432" y="-152">vSS.vSlotCounter=1</label>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id6"/>
+			<label kind="guard" x="-376" y="-88">vSS.vSlotCounter&lt;gNumberOfStaticSlots</label>
+			<label kind="assignment" x="-328" y="-72">vSS.vSlotCounter++</label>
+		</transition>
+	</template>
+	<template>
+		<name>MAC_dynamic</name>
+		<declaration>//clock x;
+//clock t_counter;
+int[0,pPayloadLengthDynMax] frame_length;
+int[0,gNumberOfMinislots] zMinislot;
+//int[0,gdNumberOfMinislots] remain[cSlotIDMax+1];
+
+//bool my_slot()
+//{
+//  return config_send[id][vSS[id].vSlotCounter-1];
+//}
+
+bool BufferEmpty()
+{
+  if (CHI_Buffer_send[vSS.vSlotCounter].length &gt; 0) return false;
+  return true;
+}
+
+int RemainMinislots()
+{
+  return gNumberOfMinislots - zMinislot;
+}
+
+bool enough_minislots()
+{
+  if (CHI_Buffer_send[vSS.vSlotCounter].length &gt;= (RemainMinislots()*gdMinislot)) return false;
+  return true;
+}
+
+
+// **IMPORTANT**
+// This function is to avoid the case that end of transmission occurs the same time to end of the last minislot
+// This case results unable to synchronize correctly problem.
+// If the above case is detected, frame_length will be added one macrotick then everything will be fine.
+void adjust_frame_length()
+{
+  int temp = frame_length - (gdMinislot-tMinislotActionPoint);
+  while (temp &gt; 0) {
+    temp = temp - gdMinislot;
+  }
+  if (temp==0) frame_length++;
+}
+
+
+void transmit()
+{
+  // set frame length in MAC
+  frame_length = CHI_Buffer_send[vSS.vSlotCounter].length;
+  // write bus frame
+  bus.frame_id = vSS.vSlotCounter;
+  bus.cycle_id = vSS.vCycleCounter;
+  bus.data = CHI_Buffer_send[vSS.vSlotCounter].data;
+  bus.length = frame_length;
+  // erase buffer
+  CHI_Buffer_send[vSS.vSlotCounter].data = 0;
+  CHI_Buffer_send[vSS.vSlotCounter].length = 0;
+  // **IMPORTANT** adjust length of frame in MAC_dynamic to avoid a fatal case.
+  adjust_frame_length();
+}
+
+//void ResetBusStatus()
+//{
+//  if (my_slot()) bus_status = IDLE;
+//}
+
+//void recording()
+//{
+//  remain[vSS[id].vSlotCounter] = gdNumberOfMinislots - zMinislot;
+//}
+
+int ComputeMinislot()
+{
+  int temp = frame_length - (gdMinislot-tMinislotActionPoint);
+  int i=zMinislot;
+  while(temp&gt;=gdMinislot) {
+    temp = temp - gdMinislot;
+    i++;
+  }
+  return i+1;
+}
+
+
+int ComputeMacrotick()
+{
+  int temp = frame_length - (gdMinislot-tMinislotActionPoint);
+  while(temp&gt;=gdMinislot) { temp = temp - gdMinislot; }
+  return gdMinislot - temp;
+}
+</declaration>
+		<location id="id7" x="-160" y="-112">
+			<committed/>
+		</location>
+		<location id="id8" x="-440" y="-112">
+			<name x="-424" y="-104">end_of_dynamic_segment</name>
+			<committed/>
+		</location>
+		<location id="id9" x="552" y="-168">
+			<name x="568" y="-192">start_of_dynamic_slot</name>
+			<committed/>
+		</location>
+		<location id="id10" x="448" y="-280">
+		</location>
+		<location id="id11" x="-440" y="136">
+			<name x="-448" y="144">wait_for_the_end_of_dynamic_segment</name>
+		</location>
+		<location id="id12" x="-184" y="-24">
+			<committed/>
+		</location>
+		<location id="id13" x="96" y="-24">
+			<name x="56" y="-56">end_of_dynamic_slot</name>
+			<committed/>
+		</location>
+		<location id="id14" x="344" y="-24">
+			<name x="224" y="-56">wait_for_the_end_of_dynamic_slot1</name>
+		</location>
+		<location id="id15" x="344" y="80">
+			<committed/>
+		</location>
+		<location id="id16" x="344" y="144">
+			<name x="224" y="152">wait_for_the_end_of_activity1</name>
+		</location>
+		<location id="id17" x="552" y="104">
+			<committed/>
+		</location>
+		<location id="id18" x="552" y="-40">
+			<name x="560" y="-32">wait_for_the_AP_transmission_start</name>
+		</location>
+		<location id="id19" x="96" y="-168">
+			<committed/>
+		</location>
+		<location id="id20" x="-136" y="-240">
+			<committed/>
+		</location>
+		<location id="id21" x="-440" y="-240">
+		</location>
+		<init ref="id21"/>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id14"/>
+			<label kind="synchronisation" x="288" y="0">set_timerB!</label>
+			<label kind="assignment" x="288" y="16">tSlotBoundary:=ComputeMacrotick(),
+zMinislot:=ComputeMinislot()</label>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id14"/>
+			<label kind="guard" x="416" y="-152">BufferEmpty() or
+!enough_minislots()</label>
+			<label kind="synchronisation" x="416" y="-120">set_timerB!</label>
+			<label kind="assignment" x="384" y="-104">tSlotBoundary:=gdMinislot,
+zMinislot++</label>
+			<nail x="448" y="-24"/>
+		</transition>
+		<transition>
+			<source ref="id17"/>
+			<target ref="id16"/>
+			<label kind="synchronisation" x="416" y="120">set_timerB!</label>
+			<label kind="assignment" x="416" y="144">tSlotBoundary:=frame_length</label>
+			<nail x="552" y="144"/>
+		</transition>
+		<transition>
+			<source ref="id19"/>
+			<target ref="id9"/>
+			<label kind="guard" x="120" y="-208">vSS.vSlotCounter&gt;gNumberOfStaticSlots+1 or
+tActionPoint&lt;=tMinislotActionPoint</label>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id8"/>
+			<label kind="guard" x="-408" y="-136">zMinislot==gNumberOfMinislots</label>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id19"/>
+			<label kind="guard" x="-136" y="-192">zMinislot&lt;gNumberOfMinislots</label>
+			<nail x="-160" y="-168"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id7"/>
+			<label kind="guard" x="-128" y="-136">vSS.vSlotCounter&lt;cSlotIDMax</label>
+			<label kind="assignment" x="-128" y="-112">vSS.vSlotCounter++</label>
+			<nail x="24" y="-112"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id21"/>
+			<label kind="synchronisation" x="-432" y="-200">NIT_start!</label>
+			<label kind="assignment" x="-432" y="-184">zMinislot:=0</label>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id8"/>
+			<label kind="guard" x="-424" y="-48">zMinislot==gNumberOfMinislots</label>
+			<nail x="-440" y="-24"/>
+		</transition>
+		<transition>
+			<source ref="id14"/>
+			<target ref="id13"/>
+			<label kind="synchronisation" x="144" y="-24">SlotEnd?</label>
+			<label kind="assignment" x="144" y="-8">bus_status=IDLE</label>
+		</transition>
+		<transition>
+			<source ref="id19"/>
+			<target ref="id10"/>
+			<label kind="guard" x="104" y="-320">vSS.vSlotCounter==gNumberOfStaticSlots+1 &amp;&amp;
+tActionPoint&gt;tMinislotActionPoint</label>
+			<label kind="synchronisation" x="104" y="-280">set_timerB!</label>
+			<label kind="assignment" x="104" y="-264">tSlotBoundary:=adActionPointDifference</label>
+			<nail x="96" y="-280"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="480" y="-304">SlotEnd?</label>
+			<nail x="552" y="-280"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id18"/>
+			<label kind="guard" x="560" y="-152">!BufferEmpty() &amp;&amp;
+enough_minislots()</label>
+			<label kind="synchronisation" x="560" y="-120">set_timerB!</label>
+			<label kind="assignment" x="560" y="-104">tSlotBoundary:=tMinislotActionPoint,
+zMinislot++</label>
+		</transition>
+		<transition>
+			<source ref="id16"/>
+			<target ref="id15"/>
+			<label kind="synchronisation" x="280" y="96">SlotEnd?</label>
+			<label kind="assignment" x="216" y="112">bus_status=CHIRP</label>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id12"/>
+			<label kind="synchronisation" x="-360" y="8">SlotEnd?</label>
+			<nail x="-440" y="32"/>
+			<nail x="-200" y="32"/>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id11"/>
+			<label kind="guard" x="-400" y="64">zMinislot&lt;gNumberOfMinislots</label>
+			<label kind="synchronisation" x="-400" y="80">set_timerB!</label>
+			<label kind="assignment" x="-400" y="96">tSlotBoundary:=gdMinislot*(gNumberOfMinislots-zMinislot),
+zMinislot:=gNumberOfMinislots</label>
+			<nail x="-184" y="136"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id12"/>
+			<label kind="guard" x="-152" y="-48">vSS.vSlotCounter==cSlotIDMax</label>
+		</transition>
+		<transition>
+			<source ref="id20"/>
+			<target ref="id21"/>
+			<label kind="guard" x="-368" y="-320">gNumberOfMinislots==0</label>
+			<label kind="synchronisation" x="-368" y="-296">NIT_start!</label>
+			<nail x="-192" y="-296"/>
+			<nail x="-392" y="-296"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id17"/>
+			<label kind="synchronisation" x="560" y="8">SlotEnd?</label>
+			<label kind="assignment" x="560" y="24">bus_status=CE_start,
+transmit()</label>
+		</transition>
+		<transition>
+			<source ref="id20"/>
+			<target ref="id19"/>
+			<label kind="guard" x="-104" y="-264">gNumberOfMinislots&gt;0</label>
+			<nail x="64" y="-240"/>
+		</transition>
+		<transition>
+			<source ref="id21"/>
+			<target ref="id20"/>
+			<label kind="synchronisation" x="-328" y="-264">dyn_seg_start?</label>
+			<label kind="assignment" x="-328" y="-240">vSS.vSlotCounter++</label>
+		</transition>
+	</template>
+	<template>
+		<name>NIT</name>
+		<declaration>clock x;</declaration>
+		<location id="id22" x="-152" y="-64">
+			<label kind="invariant" x="-162" y="-49">x&lt;=gdNIT</label>
+		</location>
+		<location id="id23" x="-320" y="-64">
+		</location>
+		<init ref="id23"/>
+		<transition>
+			<source ref="id22"/>
+			<target ref="id23"/>
+			<label kind="guard" x="-280" y="-48">x==gdNIT</label>
+			<label kind="synchronisation" x="-280" y="-16">cycle_end!</label>
+			<nail x="-168" y="-24"/>
+			<nail x="-304" y="-24"/>
+		</transition>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id22"/>
+			<label kind="synchronisation" x="-272" y="-104">NIT_start?</label>
+			<label kind="assignment" x="-304" y="-136">vSS.vSlotCounter:=0,
+x:=0</label>
+			<nail x="-304" y="-104"/>
+			<nail x="-168" y="-104"/>
+		</transition>
+	</template>
+	<template>
+		<name>POC</name>
+		<declaration>clock x;</declaration>
+		<location id="id24" x="128" y="-96">
+			<name x="144" y="-104">wait_for_cycle_end</name>
+		</location>
+		<location id="id25" x="-192" y="-176">
+			<urgent/>
+		</location>
+		<location id="id26" x="-424" y="-96">
+			<name x="-488" y="-120">start_up</name>
+			<label kind="invariant" x="-408" y="-96">x&lt;=startup_offset</label>
+		</location>
+		<init ref="id26"/>
+		<transition>
+			<source ref="id26"/>
+			<target ref="id25"/>
+			<label kind="assignment" x="-392" y="-176">vSS.vCycleCounter=1</label>
+			<nail x="-424" y="-176"/>
+		</transition>
+		<transition>
+			<source ref="id25"/>
+			<target ref="id24"/>
+			<label kind="guard" x="-160" y="-200">vSS.vCycleCounter&lt;=gCycleCounterMax</label>
+			<label kind="synchronisation" x="-160" y="-176">cycle_start!</label>
+			<nail x="128" y="-176"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id26"/>
+			<label kind="guard" x="-408" y="-40">vSS.vCycleCounter==gCycleCounterMax</label>
+			<label kind="synchronisation" x="-408" y="-16">cycle_end?</label>
+			<label kind="assignment" x="-408" y="0">x:=0</label>
+			<nail x="128" y="-16"/>
+			<nail x="-424" y="-16"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id25"/>
+			<label kind="guard" x="-152" y="-120">vSS.vCycleCounter&lt;gCycleCounterMax</label>
+			<label kind="synchronisation" x="-152" y="-96">cycle_end?</label>
+			<label kind="assignment" x="-152" y="-80">vSS.vCycleCounter++, x=0</label>
+			<nail x="-192" y="-96"/>
+		</transition>
+	</template>
+	<template>
+		<name>Timer</name>
+		<declaration>clock x;
+//clock y;</declaration>
+		<location id="id27" x="-736" y="-72">
+			<name x="-720" y="-80">end</name>
+			<committed/>
+		</location>
+		<location id="id28" x="-736" y="-184">
+			<name x="-720" y="-208">Timer_SlotBoundary</name>
+			<label kind="invariant" x="-720" y="-184">x&lt;=tSlotBoundary</label>
+		</location>
+		<location id="id29" x="-736" y="-296">
+			<name x="-728" y="-328">Timer_ActionPoint</name>
+			<label kind="invariant" x="-720" y="-304">x&lt;=tSlotActionPoint</label>
+		</location>
+		<location id="id30" x="-936" y="-296">
+			<name x="-952" y="-328">initial</name>
+		</location>
+		<init ref="id30"/>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id28"/>
+			<label kind="synchronisation" x="-856" y="-208">set_timerB?</label>
+			<label kind="assignment" x="-856" y="-184">x:=0</label>
+			<nail x="-872" y="-184"/>
+		</transition>
+		<transition>
+			<source ref="id29"/>
+			<target ref="id28"/>
+			<label kind="guard" x="-728" y="-264">x==tSlotActionPoint</label>
+			<label kind="synchronisation" x="-728" y="-248">SlotStart!</label>
+		</transition>
+		<transition>
+			<source ref="id27"/>
+			<target ref="id30"/>
+			<label kind="assignment" x="-856" y="-72">x:=0</label>
+			<nail x="-936" y="-72"/>
+		</transition>
+		<transition>
+			<source ref="id28"/>
+			<target ref="id27"/>
+			<label kind="guard" x="-728" y="-144">x==tSlotBoundary</label>
+			<label kind="synchronisation" x="-728" y="-128">SlotEnd!</label>
+		</transition>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id29"/>
+			<label kind="synchronisation" x="-864" y="-320">set_timerA?</label>
+			<label kind="assignment" x="-864" y="-296">x:=0</label>
+		</transition>
+	</template>
+	<template>
+		<name>FSP</name>
+		<declaration>void check_frame_and_update_vSS()
+{
+  if ((bus.frame_id==vSS.vSlotCounter) &amp;&amp; // frame id in bus equals current slot id in vSS
+    (bus.cycle_id==vSS.vCycleCounter))   // cycle id in bus equals current cycle id in vSS
+    vSS.ValidFrame = 1;
+  else
+    vSS.ValidFrame = 0;
+}
+
+void receive()
+{
+  // read bus frame and write receuve buffer
+  CHI_Buffer_receive[vSS.vSlotCounter].data = bus.data;
+  CHI_Buffer_receive[vSS.vSlotCounter].length = bus.length;
+}
+
+void reset_bus_frame()
+{
+  bus.frame_id = 0;
+  bus.cycle_id = 0;
+  bus.data = 0;
+  bus.length = 0;
+}
+</declaration>
+		<location id="id31" x="80" y="-8">
+			<name x="96" y="-32">wait_for_CHIRP</name>
+		</location>
+		<location id="id32" x="-224" y="-96">
+			<name x="-280" y="-128">wait_for_CE_start</name>
+		</location>
+		<init ref="id32"/>
+		<transition>
+			<source ref="id31"/>
+			<target ref="id32"/>
+			<label kind="guard" x="-144" y="64">bus_status==CHIRP &amp;&amp;
+!vSS.ValidFrame</label>
+			<label kind="synchronisation" x="-144" y="96">go?</label>
+			<nail x="80" y="96"/>
+			<nail x="-224" y="96"/>
+		</transition>
+		<transition>
+			<source ref="id31"/>
+			<target ref="id32"/>
+			<label kind="guard" x="-144" y="-40">bus_status==CHIRP &amp;&amp;
+vSS.ValidFrame</label>
+			<label kind="synchronisation" x="-144" y="-8">go?</label>
+			<label kind="assignment" x="-144" y="8">receive(),
+reset_bus_frame()</label>
+			<nail x="-176" y="-8"/>
+		</transition>
+		<transition>
+			<source ref="id32"/>
+			<target ref="id31"/>
+			<label kind="guard" x="-144" y="-120">bus_status==CE_start</label>
+			<label kind="synchronisation" x="-144" y="-96">go?</label>
+			<label kind="assignment" x="-144" y="-80">check_frame_and_update_vSS()</label>
+			<nail x="80" y="-96"/>
+		</transition>
+	</template>
+	<template>
+		<name>UrgentChannel</name>
+		<location id="id33" x="0" y="0">
+		</location>
+		<init ref="id33"/>
+		<transition>
+			<source ref="id33"/>
+			<target ref="id33"/>
+			<label kind="synchronisation" x="72" y="24">go!</label>
+			<nail x="64" y="0"/>
+			<nail x="64" y="64"/>
+			<nail x="0" y="64"/>
+		</transition>
+	</template>
+	<template>
+		<name>Receiver</name>
+		<location id="id34" x="-88" y="-16">
+			<name x="-152" y="0">wait_for_receiving</name>
+		</location>
+		<init ref="id34"/>
+		<transition>
+			<source ref="id34"/>
+			<target ref="id34"/>
+			<label kind="guard" x="-160" y="-128">CHI_Buffer_receive[vSS.vSlotCounter].length&gt;0</label>
+			<label kind="synchronisation" x="-160" y="-112">go?</label>
+			<label kind="assignment" x="-160" y="-96">clean_receive_buffer_CHI(vSS.vSlotCounter)</label>
+			<nail x="-88" y="-72"/>
+			<nail x="-16" y="-72"/>
+			<nail x="-16" y="-16"/>
+		</transition>
+	</template>
+	<template>
+		<name>Sender1</name>
+		<declaration>clock x;
+clock y;
+// write static frame into sending queue of node
+// parameters: (1)cycle, (2)slot, (3)target node id, (4) length, of static frame
+//void _CHI(int data, int len)
+//{
+//  SendStatic_queue[id][length[id]].cycle_id = cycle;
+//  SendStatic_queue[id][length[id]].slot_id  = slot;
+//  SendStatic_queue[id][length[id]].node_id = node;
+//  SendStatic_queue[id][length[id]].length = len;
+//  length[id]++;
+//}
+</declaration>
+		<location id="id35" x="-632" y="-256">
+		</location>
+		<init ref="id35"/>
+		<transition>
+			<source ref="id35"/>
+			<target ref="id35"/>
+			<label kind="select" x="-896" y="-272">value: int[5,5]</label>
+			<label kind="guard" x="-968" y="-248">CHI_Buffer_send[msg5].length == 0</label>
+			<label kind="synchronisation" x="-848" y="-232">go?</label>
+			<label kind="assignment" x="-936" y="-216">write_msg_to_CHI(msg5, value, 2)</label>
+			<nail x="-688" y="-176"/>
+			<nail x="-736" y="-256"/>
+		</transition>
+		<transition>
+			<source ref="id35"/>
+			<target ref="id35"/>
+			<label kind="select" x="-520" y="-272">value: int[3,3]</label>
+			<label kind="guard" x="-528" y="-248">CHI_Buffer_send[msg3].length == 0</label>
+			<label kind="synchronisation" x="-448" y="-232">go?</label>
+			<label kind="assignment" x="-528" y="-216">write_msg_to_CHI(msg3, value, 2)</label>
+			<nail x="-528" y="-256"/>
+			<nail x="-584" y="-176"/>
+		</transition>
+		<transition>
+			<source ref="id35"/>
+			<target ref="id35"/>
+			<label kind="select" x="-672" y="-424">value: int[1,1]</label>
+			<label kind="guard" x="-752" y="-400">CHI_Buffer_send[msg1].length == 0</label>
+			<label kind="synchronisation" x="-648" y="-384">go?</label>
+			<label kind="assignment" x="-736" y="-368">write_msg_to_CHI(msg1, value, 2)</label>
+			<nail x="-688" y="-344"/>
+			<nail x="-584" y="-344"/>
+		</transition>
+	</template>
+	<template>
+		<name>Sender2</name>
+		<declaration>clock x;
+clock y;
+// write static frame into sending queue of node
+// parameters: (1)cycle, (2)slot, (3)target node id, (4) length, of static frame
+//void _CHI(int data, int len)
+//{
+//  SendStatic_queue[id][length[id]].cycle_id = cycle;
+//  SendStatic_queue[id][length[id]].slot_id  = slot;
+//  SendStatic_queue[id][length[id]].node_id = node;
+//  SendStatic_queue[id][length[id]].length = len;
+//  length[id]++;
+//}
+</declaration>
+		<location id="id36" x="-632" y="-256">
+		</location>
+		<init ref="id36"/>
+		<transition>
+			<source ref="id36"/>
+			<target ref="id36"/>
+			<label kind="select" x="-896" y="-272">value: int[6,6]</label>
+			<label kind="guard" x="-968" y="-248">CHI_Buffer_send[msg6].length == 0</label>
+			<label kind="synchronisation" x="-856" y="-232">go?</label>
+			<label kind="assignment" x="-936" y="-216">write_msg_to_CHI(msg6, value, 2)</label>
+			<nail x="-688" y="-176"/>
+			<nail x="-736" y="-256"/>
+		</transition>
+		<transition>
+			<source ref="id36"/>
+			<target ref="id36"/>
+			<label kind="select" x="-480" y="-272">value: int[4,4]</label>
+			<label kind="guard" x="-528" y="-248">CHI_Buffer_send[msg4].length == 0</label>
+			<label kind="synchronisation" x="-448" y="-232">go?</label>
+			<label kind="assignment" x="-528" y="-216">write_msg_to_CHI(msg4, value, 2)</label>
+			<nail x="-528" y="-256"/>
+			<nail x="-584" y="-176"/>
+		</transition>
+		<transition>
+			<source ref="id36"/>
+			<target ref="id36"/>
+			<label kind="select" x="-688" y="-416">value: int[2,2]</label>
+			<label kind="guard" x="-752" y="-400">CHI_Buffer_send[msg2].length == 0</label>
+			<label kind="synchronisation" x="-648" y="-384">go?</label>
+			<label kind="assignment" x="-736" y="-368">write_msg_to_CHI(msg2, value, 2)</label>
+			<nail x="-688" y="-344"/>
+			<nail x="-584" y="-344"/>
+		</transition>
+	</template>
+	<template>
+		<name>Sender3</name>
+		<declaration>clock x;
+clock y;
+// write static frame into sending queue of node
+// parameters: (1)cycle, (2)slot, (3)target node id, (4) length, of static frame
+//void _CHI(int data, int len)
+//{
+//  SendStatic_queue[id][length[id]].cycle_id = cycle;
+//  SendStatic_queue[id][length[id]].slot_id  = slot;
+//  SendStatic_queue[id][length[id]].node_id = node;
+//  SendStatic_queue[id][length[id]].length = len;
+//  length[id]++;
+//}
+</declaration>
+		<location id="id37" x="-632" y="-256">
+		</location>
+		<init ref="id37"/>
+		<transition>
+			<source ref="id37"/>
+			<target ref="id37"/>
+			<label kind="select" x="-664" y="-176">len: int[18,20]</label>
+			<label kind="guard" x="-728" y="-160">CHI_Buffer_send[msg9].length == 0</label>
+			<label kind="synchronisation" x="-640" y="-144">go?</label>
+			<label kind="assignment" x="-728" y="-128">write_msg_to_CHI(msg9, 59, len)</label>
+			<nail x="-576" y="-176"/>
+			<nail x="-688" y="-176"/>
+		</transition>
+		<transition>
+			<source ref="id37"/>
+			<target ref="id37"/>
+			<label kind="select" x="-672" y="-416">len: int[18,20]</label>
+			<label kind="guard" x="-752" y="-400">CHI_Buffer_send[msg7].length == 0</label>
+			<label kind="synchronisation" x="-648" y="-384">go?</label>
+			<label kind="assignment" x="-736" y="-368">write_msg_to_CHI(msg7, 57, len)</label>
+			<nail x="-688" y="-344"/>
+			<nail x="-584" y="-344"/>
+			<nail x="-616" y="-280"/>
+		</transition>
+	</template>
+	<template>
+		<name>Sender4</name>
+		<declaration>clock x;
+clock y;
+// write static frame into sending queue of node
+// parameters: (1)cycle, (2)slot, (3)target node id, (4) length, of static frame
+//void _CHI(int data, int len)
+//{
+//  SendStatic_queue[id][length[id]].cycle_id = cycle;
+//  SendStatic_queue[id][length[id]].slot_id  = slot;
+//  SendStatic_queue[id][length[id]].node_id = node;
+//  SendStatic_queue[id][length[id]].length = len;
+//  length[id]++;
+//}
+</declaration>
+		<location id="id38" x="-632" y="-256">
+		</location>
+		<init ref="id38"/>
+		<transition>
+			<source ref="id38"/>
+			<target ref="id38"/>
+			<label kind="select" x="-664" y="-176">len: int[18,20]</label>
+			<label kind="guard" x="-728" y="-160">CHI_Buffer_send[msg10].length == 0</label>
+			<label kind="synchronisation" x="-640" y="-144">go?</label>
+			<label kind="assignment" x="-728" y="-128">write_msg_to_CHI(msg10, 60, len)</label>
+			<nail x="-576" y="-176"/>
+			<nail x="-688" y="-176"/>
+		</transition>
+		<transition>
+			<source ref="id38"/>
+			<target ref="id38"/>
+			<label kind="select" x="-672" y="-416">len: int[18,20]</label>
+			<label kind="guard" x="-752" y="-400">CHI_Buffer_send[msg8].length == 0</label>
+			<label kind="synchronisation" x="-648" y="-384">go?</label>
+			<label kind="assignment" x="-736" y="-368">write_msg_to_CHI(msg8, 58, len)</label>
+			<nail x="-688" y="-344"/>
+			<nail x="-584" y="-344"/>
+		</transition>
+	</template>
+	<system>//Task0 = Task_Sender(0);
+//Task1 = Task_Receiver(1);
+//Task2 = Task_Sender(2);
+//Task3 = Task_Receiver(3);
+//Task1 = ECU1(0);
+//Task2 = ECU2(1);
+//Task3 = ECU3(2);
+//Task4 = Actuator(3);
+
+
+//system Task0,Task1,POC,MAC_static,FSP,Macrotick,CHI,UrgentChannel;
+//system POC,MAC_static,MAC_dynamic,FSP,Macrotick,UrgentChannel,Task1,Task2,Task3,Task4;
+system Sender1,Sender2,Sender3,Sender4,Receiver,POC,MAC_static,MAC_dynamic,NIT,FSP,Timer,UrgentChannel;
+</system>
+</nta>
