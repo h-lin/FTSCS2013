@@ -1,6 +1,6 @@
 FTSCS2013
 =======
-This Repository contains UPPAAL models used in the paper submitted to FTSCS 2013.
+This repository contains UPPAAL models used in the paper submitted to FTSCS 2013.
 
 FTSCS2013_SR1_20130906.xml --> The UPPAAL model of example system SR1
 
